@@ -118,8 +118,8 @@ public:
         // 2. 云台比例控制（带速度限制，模拟滞后）
         updateGimbalAngles(desired_yaw, desired_pitch);
 
-        // 3. 发布视场角消息（x=方位角，y=俯仰角，z=0）
-        publishLOSAngle();
+        // 3. 发布视场角消息（发布期望视线角，z为跟踪精度）
+        publishLOSAngle(desired_yaw, desired_pitch);
 
         // 4. 发布云台位姿（用于RViz显示）
         publishGimbalPose();
@@ -189,15 +189,20 @@ public:
         desired_pitch_rate = std::max(-max_pitch_rate_, std::min(desired_pitch_rate, max_pitch_rate_));
         current_gimbal_pitch_ += desired_pitch_rate * dt;
         current_gimbal_pitch_ = atan2(sin(current_gimbal_pitch_), cos(current_gimbal_pitch_));
-        // 根据角度误差计算识别可信度
-        gimbal_tracking_accuracy_ = 1.0 - (yaw_error * yaw_error + pitch_error * pitch_error) / (M_PI * M_PI);
+        // 根据角度误差计算识别可信度（表征图像畸变程度）
+        double angular_error = sqrt(yaw_error*yaw_error + pitch_error*pitch_error);
+        gimbal_tracking_accuracy_ = exp(-angular_error);  // 用指数衰减，误差越大精度越低
     }
 
-    // 发布视场角消息（x=方位角，y=俯仰角，z=0）
-    void publishLOSAngle() {
+    // 发布视场角消息（发布的是期望视线角，不是云台实际朝向）
+    void publishLOSAngle(double desired_yaw, double desired_pitch) {
         geometry_msgs::Point los_angle_msg;
-        los_angle_msg.x = current_gimbal_yaw_;    // 方位角（rad）
-        los_angle_msg.y = -current_gimbal_pitch_;  // 俯仰角（rad）
+        los_angle_msg.x = desired_yaw;     // 期望方位角（真实LOS，rad）
+        los_angle_msg.y = -desired_pitch;   // 期望俯仰角（真实LOS，rad）
+        // 跟踪精度：基于云台与目标的角度偏差（图像畸变/脱靶量）
+        if (std::isnan(gimbal_tracking_accuracy_)) {
+            gimbal_tracking_accuracy_ = 0.5;  // 默认中等置信度
+        }
         los_angle_msg.z = gimbal_tracking_accuracy_;  // 云台跟踪精度
         los_angle_pub_.publish(los_angle_msg);
     }

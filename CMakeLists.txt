@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   tf
   visualization_msgs
+  eigen_conversions
 )
 
 # 声明catkin包（供其他包依赖）
@@ -23,13 +24,22 @@ catkin_package(
 
 # 包含ROS头文件目录
 include_directories(
+  include
   ${catkin_INCLUDE_DIRS}
+)
+
+# ========== 制导策略库 ==========
+add_library(guidance_strategies
+  src/guidance_strategies.cpp
+)
+target_link_libraries(guidance_strategies
+  ${catkin_LIBRARIES}
 )
 
 # ========== 逐个编译四个节点 ==========
 # 1. 目标运动模拟节点
 add_executable(target_motion_simulator_node
-  src/target_motion_simulator_node.cpp  
+  src/target_motion_simulator_node.cpp
 )
 target_link_libraries(target_motion_simulator_node
   ${catkin_LIBRARIES}
@@ -51,13 +61,14 @@ target_link_libraries(target_estimator_node
   ${catkin_LIBRARIES}
 )
 
-# # 4. 制导控制节点
-# add_executable(guidance_control_node
-#   src/guidance_control_node.cpp
-# )
-# target_link_libraries(guidance_control_node
-#   ${catkin_LIBRARIES}
-# )
+# 4. 制导控制节点
+add_executable(guidance_control_node
+  src/guidance_control_node.cpp
+)
+target_link_libraries(guidance_control_node
+  guidance_strategies
+  ${catkin_LIBRARIES}
+)
 
 # ========== 安装可执行文件 ==========
 # install(TARGETS

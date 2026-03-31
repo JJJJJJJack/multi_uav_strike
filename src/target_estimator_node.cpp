@@ -2,6 +2,7 @@
 #include <geometry_msgs/Point.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Twist.h>
+#include <geometry_msgs/TwistStamped.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <tf/transform_datatypes.h>
@@ -34,8 +35,7 @@ private:
     ros::Publisher target_est_marker_pub_;
     ros::Publisher particles_marker_pub_;
     ros::Publisher target_est_pose_pub_;
-    ros::Publisher observe_guide_pose_pub_;
-    ros::Publisher observe_guide_vel_pub_;
+    ros::Publisher target_est_twist_pub_;
     ros::Timer pf_timer_;
 
     int num_particles_;
@@ -49,8 +49,6 @@ private:
     double optimal_observe_dist_;
     double vel_consistency_weight_;
     double guide_vel_gain_;
-    double spiral_angular_vel_;    // 新增：螺旋线角速度（rad/s）
-    double approach_vel_gain_;     // 新增：接近目标的速度增益
     // 新增：目标高度先验相关（解决距离坍缩核心参数）
     double target_z_prior_;        // 目标高度先验值（如地面目标设0.0，空中目标设具体值）
     double target_z_weight_;       // 高度误差的权重（控制高度约束的强度）
@@ -68,15 +66,14 @@ private:
     bool is_los_received_ = false;
     bool is_uav_pose_received_ = false;
     bool is_particles_initialized_ = false;
-    double tracking_accuracy_filter = 0.0;
+    double tracking_accuracy_filter = 0.0;  // 初始化为1.0，避免启动时收敛慢
     double avg_particle_dist_;
 
     std::default_random_engine rng_;
     std::normal_distribution<double> normal_dist_;
 
     geometry_msgs::PoseStamped estimated_target_pose_;
-    geometry_msgs::PoseStamped observe_guide_pose_;
-    geometry_msgs::Twist observe_guide_vel_;
+    geometry_msgs::TwistStamped estimated_target_velocity_;
 
 public:
     TargetEstimator() {
@@ -85,15 +82,12 @@ public:
         n_param.param<double>("init_dist_std_dev", init_dist_std_dev_, 1.0);
         n_param.param<double>("process_noise_std_dev", process_noise_std_dev_, 0.2);
         n_param.param<double>("observation_noise_std_dev", observation_noise_std_dev_, 0.1);
-        n_param.param<double>("min_confidence", min_confidence_, 0.8);
+        n_param.param<double>("min_confidence", min_confidence_, 0.2);
         n_param.param<double>("pf_loop_freq", pf_loop_freq_, 50.0);
         n_param.param<double>("uav_height_for_init", uav_height_for_init_, 10.0);
         n_param.param<double>("dist_prior_weight", dist_prior_weight_, 0.3);
         n_param.param<double>("optimal_observe_dist", optimal_observe_dist_, 20.0);
         n_param.param<double>("vel_consistency_weight", vel_consistency_weight_, 0.3);
-        n_param.param<double>("guide_vel_gain", guide_vel_gain_, 0.5);
-        n_param.param<double>("spiral_angular_vel", spiral_angular_vel_, 0.2); // 新增默认值：0.2rad/s
-        n_param.param<double>("approach_vel_gain", approach_vel_gain_, 0.3);    // 新增默认值：0.3
         // 新增：目标高度先验+距离惩罚参数（解决粒子坍缩）
         n_param.param<double>("target_z_prior", target_z_prior_, 0.0);        // 默认地面目标，高度0
         n_param.param<double>("target_z_weight", target_z_weight_, 0.1);      // 高度约束权重，0~1
@@ -119,8 +113,7 @@ public:
         target_est_marker_pub_ = nh_.advertise<visualization_msgs::Marker>("target_estimated_marker", 10);
         particles_marker_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("particles_marker_array", 10);
         target_est_pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("target_estimated_pose", 10);
-        observe_guide_pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("observe_guide_pose", 10);
-        observe_guide_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("quad/setpoint_velocity/cmd_vel_unstamped", 10);
+        target_est_twist_pub_ = nh_.advertise<geometry_msgs::TwistStamped>("target_estimated_twist", 10);
 
         pf_timer_ = nh_.createTimer(ros::Duration(1.0/pf_loop_freq_), &TargetEstimator::pfLoopCallback, this);
 
@@ -129,12 +122,9 @@ public:
                  num_particles_, init_dist_std_dev_, process_noise_std_dev_, observation_noise_std_dev_);
         ROS_INFO("New Params: dist_prior=%.2f, vel_consistency=%.2f",
                  dist_prior_weight_, vel_consistency_weight_);
-        ROS_INFO("Spiral Params: angular_vel=%.2frad/s, approach_gain=%.2f",
-                 spiral_angular_vel_, approach_vel_gain_);
         ROS_INFO("Subscribed to: gimbal_los=%s, uav_pose=%s", "/gimbal_los_angle", "/quad/pose");
-        ROS_INFO("Publishing to: target_est_marker=%s, particles=%s, target_est_pose=%s, guide_pose=%s, guide_vel=%s",
-                 "/target_estimated_marker", "/particles_marker_array", "/target_estimated_pose",
-                 "/observe_guide_pose", "/observe_guide_vel");
+        ROS_INFO("Publishing to: target_est_marker=%s, particles=%s, target_est_pose=%s",
+                 "/target_estimated_marker", "/particles_marker_array", "/target_estimated_pose");
         ROS_INFO("Anti-collapse Params: target_z_prior=%.2fm, z_weight=%.2f, angle_dist_gain=%.3f",
          target_z_prior_, target_z_weight_, angle_error_dist_gain_);
          //打印颜色参数
@@ -144,7 +134,8 @@ public:
 
     void gimbalLosCallback(const geometry_msgs::Point::ConstPtr& msg) {
         current_los_angle_ = *msg;
-        tracking_accuracy_filter = tracking_accuracy_filter * 0.95 + current_los_angle_.z * 0.05;
+        // 加快收敛速度：0.9代替0.95，30次迭代可达95%收敛
+        tracking_accuracy_filter = tracking_accuracy_filter * 0.9 + current_los_angle_.z * 0.1;
         is_los_received_ = true;
     }
 
@@ -160,7 +151,7 @@ public:
         }
 
         if (!is_particles_initialized_){
-            if (tracking_accuracy_filter > 0.97) {
+            if (tracking_accuracy_filter > 0.9) {
                 initializeParticles();
                 is_particles_initialized_ = true;
                 ROS_INFO("Particles initialized! Total particles: %d", num_particles_);
@@ -168,8 +159,8 @@ public:
             return;
         }
         
-        if(tracking_accuracy_filter < 0.9){
-            ROS_WARN_THROTTLE(1.0, "Tracking accuracy low, not updating particles.");
+        if(tracking_accuracy_filter < 0.5){
+            ROS_WARN_THROTTLE(1.0, "[PF] Tracking accuracy low: filter=%.4f, los_z=%.4f, not updating.", tracking_accuracy_filter, current_los_angle_.z);
             return;
         }
 
@@ -177,23 +168,17 @@ public:
         updateParticleWeights();
         resampleParticles();
         estimateTargetState();
-        calculateObserveGuide();
 
         publishEstimatedTargetMarker();
         publishParticlesMarkerArray();
         publishEstimatedTargetPose();
-        publishObserveGuidePose();
-        publishObserveGuideVel();
+        publishEstimatedTargetTwist();
 
         ROS_DEBUG_THROTTLE(1.0, "Estimated target: x=%.2f, y=%.2f, z=%.2f (particles num: %lu)",
                            estimated_target_pose_.pose.position.x,
                            estimated_target_pose_.pose.position.y,
                            estimated_target_pose_.pose.position.z,
                            particles_.size());
-        ROS_DEBUG_THROTTLE(1.0, "Observe guide vel: vx=%.2f, vy=%.2f, vz=%.2f",
-                           observe_guide_vel_.linear.x,
-                           observe_guide_vel_.linear.y,
-                           observe_guide_vel_.linear.z);
     }
 
     void initializeParticles() {
@@ -205,24 +190,35 @@ public:
         double uav_z = current_uav_pose_.pose.position.z;
 
         double pitch = current_los_angle_.y;
-        double init_dist = current_uav_pose_.pose.position.z / fabs(sin(pitch));
-        std::cout << "!!!!!!!!!!!!Initialized UAV height: " << current_uav_pose_.pose.position.z << std::endl;
-        std::cout << "!!!!!!!!!!!!Initialized pitch: " << pitch << std::endl;
-        std::cout << "!!!!!!!!!!!!Initialized distance: " << init_dist << std::endl;
-
         double yaw = current_los_angle_.x;
+
+        // 检查pitch是否过小，避免距离计算发散
+        if (fabs(sin(pitch)) < 0.01) {
+            ROS_ERROR("[INIT] Pitch too small (%.4f), cannot calculate init distance!", pitch);
+            return;
+        }
+
+        double init_dist = uav_z / fabs(sin(pitch));
+
+        // 添加最大初始化距离限制，避免gimbal未锁定时产生巨大距离
+        double max_init_dist = 1000.0;  // 最大1000米，对于地面目标足够
+        if (init_dist > max_init_dist) {
+            ROS_WARN("[INIT] Init dist (%.2f) > max (%.2f), using default range", init_dist, max_init_dist);
+            init_dist = max_init_dist;
+        }
+
+        ROS_WARN("[INIT] UAV: (%.2f, %.2f, %.2f), yaw=%.2f, pitch=%.2f, dist=%.2f",
+                 uav_x, uav_y, uav_z, yaw, pitch, init_dist);
+
         double target_x_init = uav_x + init_dist * cos(pitch) * cos(yaw);
         double target_y_init = uav_y + init_dist * cos(pitch) * sin(yaw);
-        // double target_z_init = uav_z - init_dist * sin(pitch);
         double target_z_init = target_z_prior_; // 优先使用目标高度先验
-        std::cout << "!!!!!!!!!!!!Initialized target position: " << target_x_init << ", " << target_y_init << ", " << target_z_init << std::endl;
+        ROS_WARN("[INIT] Target init: (%.2f, %.2f, %.2f)", target_x_init, target_y_init, target_z_init);
 
         for (int i = 0; i < num_particles_; ++i) {
             double x_noise = normal_dist_(rng_) * init_dist_std_dev_;
             double y_noise = normal_dist_(rng_) * init_dist_std_dev_;
-            // double z_noise = normal_dist_(rng_) * init_dist_std_dev_;
-            // 粒子z方向噪声基于先验高度，而非计算值
-            double z_noise = normal_dist_(rng_) * init_dist_std_dev_ * 0.5; // 高度噪声可适当减小
+            double z_noise = normal_dist_(rng_) * init_dist_std_dev_ * 0.5;
 
             double vx = normal_dist_(rng_) * 0.5;
             double vy = normal_dist_(rng_) * 0.5;
@@ -239,6 +235,19 @@ public:
         }
 
         calculateAvgParticleDist();
+
+        // Debug: 打印初始粒子分布
+        double px_mean = 0, py_mean = 0, pz_mean = 0;
+        for (const auto& p : particles_) {
+            px_mean += p.x;
+            py_mean += p.y;
+            pz_mean += p.z;
+        }
+        px_mean /= num_particles_;
+        py_mean /= num_particles_;
+        pz_mean /= num_particles_;
+        ROS_WARN("[INIT] Particles initialized: count=%d, mean=(%.2f, %.2f, %.2f), avg_dist=%.2f",
+                 num_particles_, px_mean, py_mean, pz_mean, avg_particle_dist_);
     }
 
     void calculateAvgParticleDist() {
@@ -273,31 +282,44 @@ public:
             p.vx = std::max(-max_speed, std::min(p.vx, max_speed));
             p.vy = std::max(-max_speed, std::min(p.vy, max_speed));
             p.vz = std::max(-1.0, std::min(p.vz, 1.0));
-            
-            // 不需要限制最远观测距离
-            // double uav_x = current_uav_pose_.pose.position.x;
-            // double uav_y = current_uav_pose_.pose.position.y;
-            // double max_dist = optimal_observe_dist_ * 5;
-            // double dx = p.x - uav_x;
-            // double dy = p.y - uav_y;
-            // double dist = sqrt(dx*dx + dy*dy);
-            // if (dist > max_dist) {
-            //     p.x = uav_x + (dx / dist) * max_dist;
-            //     p.y = uav_y + (dy / dist) * max_dist;
-            // }
+
+            // 限制粒子位置不发散太远
+            double max_dist = 500.0;
+            double dist = sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+            if (dist > max_dist) {
+                p.x *= max_dist / dist;
+                p.y *= max_dist / dist;
+                p.z *= max_dist / dist;
+            }
         }
 
         calculateAvgParticleDist();
+
+        // Debug: 预测后粒子分布
+        double px_min = 1e10, px_max = -1e10, py_min = 1e10, py_max = -1e10, pz_min = 1e10, pz_max = -1e10;
+        for (const auto& p : particles_) {
+            px_min = std::min(px_min, p.x); px_max = std::max(px_max, p.x);
+            py_min = std::min(py_min, p.y); py_max = std::max(py_max, p.y);
+            pz_min = std::min(pz_min, p.z); pz_max = std::max(pz_max, p.z);
+        }
+        ROS_DEBUG_THROTTLE(2.0, "[PRED] Particle range: X[%.2f,%.2f] Y[%.2f,%.2f] Z[%.2f,%.2f] avg_dist=%.2f",
+                          px_min, px_max, py_min, py_max, pz_min, pz_max, avg_particle_dist_);
     }
 
     void updateParticleWeights() {
         double total_weight = 0.0;
         double confidence = current_los_angle_.z;
+
+        // 安全检查：检测NaN
+        bool confidence_valid = !(std::isnan(confidence) || std::isnan(tracking_accuracy_filter));
+
         double uav_x = current_uav_pose_.pose.position.x;
         double uav_y = current_uav_pose_.pose.position.y;
         double uav_z = current_uav_pose_.pose.position.z;
         double obs_yaw = current_los_angle_.x;
         double obs_pitch = current_los_angle_.y;
+
+        // 计算加权平均速度
         double avg_vx = 0.0, avg_vy = 0.0, avg_vz = 0.0;
         for (const auto& p : particles_) {
             avg_vx += p.vx * p.weight;
@@ -306,7 +328,7 @@ public:
         }
 
         for (auto& p : particles_) {
-            if (confidence < min_confidence_) {
+            if (!confidence_valid || confidence < min_confidence_) {
                 p.weight = 1.0 / num_particles_;
             } else {
                 double dx = p.x - uav_x;
@@ -341,26 +363,42 @@ public:
                 // 权重融合：角度权重（主） + 高度权重（约束） + 速度权重（平滑），三者和为1
                 // 可通过调整权重系数，适配不同场景
                 double angle_w_coeff = 1.0 - target_z_weight_ - vel_consistency_weight_;
-                p.weight = angle_w_coeff * angle_weight 
-                        + target_z_weight_ * z_weight 
+                p.weight = angle_w_coeff * angle_weight
+                        + target_z_weight_ * z_weight
                         + vel_consistency_weight_ * vel_weight;
 
-                ROS_DEBUG("Particle: [x: %.2f, y: %.2f, z: %.2f, dist: %.2f, weight: %.4f] | angle_w: %.4f, z_w: %.4f, vel_w: %.4f",
-                        p.x, p.y, p.z, dist, p.weight, angle_weight, z_weight, vel_weight);
+                // NaN/Inf安全检查：如果权重无效，使用均匀权重
+                if (std::isnan(p.weight) || std::isinf(p.weight)) {
+                    p.weight = 1.0 / num_particles_;
+                }
             }
             total_weight += p.weight;
         }
 
         // 权重归一化
-        if (total_weight > 1e-6) {
-            for (auto& p : particles_) {
-                p.weight /= total_weight;
-            }
-        } else {
+        if (std::isnan(total_weight) || std::isinf(total_weight) || total_weight < 1e-6) {
+            // total_weight无效（NaN、Inf或太小），使用均匀权重
             for (auto& p : particles_) {
                 p.weight = 1.0 / num_particles_;
             }
+            total_weight = 1.0;
+        } else {
+            for (auto& p : particles_) {
+                p.weight /= total_weight;
+            }
         }
+
+        // Debug: 计算有效粒子数 (1/sum(w^2))
+        double sum_w_sq = 0.0;
+        double min_w = 1e10, max_w = 0.0;
+        for (const auto& p : particles_) {
+            sum_w_sq += p.weight * p.weight;
+            min_w = std::min(min_w, p.weight);
+            max_w = std::max(max_w, p.weight);
+        }
+        double effective_n = 1.0 / sum_w_sq;
+        // ROS_WARN_THROTTLE(1.0, "[PF] confidence=%.2f, total_w=%.2f, effective_n=%.1f/%d, weight_range=[%.6f, %.6f]",
+        //                   confidence, total_weight, effective_n, num_particles_, min_w, max_w);
     }
 
     // 修正后的重采样函数
@@ -392,16 +430,38 @@ public:
         }
 
         particles_ = std::move(new_particles);
+
+        // Debug: 重采样后检查粒子分布
+        double px_mean = 0, py_mean = 0, pz_mean = 0;
+        double px_std = 0, py_std = 0, pz_std = 0;
+        for (const auto& p : particles_) {
+            px_mean += p.x;
+            py_mean += p.y;
+            pz_mean += p.z;
+        }
+        px_mean /= num_particles_;
+        py_mean /= num_particles_;
+        pz_mean /= num_particles_;
+        for (const auto& p : particles_) {
+            px_std += (p.x - px_mean) * (p.x - px_mean);
+            py_std += (p.y - py_mean) * (p.y - py_mean);
+            pz_std += (p.z - pz_mean) * (p.z - pz_mean);
+        }
+        ROS_DEBUG("[RESAMPLE] Particles std: (%.2f, %.2f, %.2f)", sqrt(px_std/num_particles_), sqrt(py_std/num_particles_), sqrt(pz_std/num_particles_));
     }
 
     void estimateTargetState() {
         double sum_x = 0.0, sum_y = 0.0, sum_z = 0.0;
+        double sum_vx = 0.0, sum_vy = 0.0, sum_vz = 0.0;
         double sum_weight = 0.0;
 
         for (const auto& p : particles_) {
             sum_x += p.x * p.weight;
             sum_y += p.y * p.weight;
             sum_z += p.z * p.weight;
+            sum_vx += p.vx * p.weight;
+            sum_vy += p.vy * p.weight;
+            sum_vz += p.vz * p.weight;
             sum_weight += p.weight;
         }
 
@@ -409,6 +469,10 @@ public:
             estimated_target_pose_.pose.position.x = sum_x / sum_weight;
             estimated_target_pose_.pose.position.y = sum_y / sum_weight;
             estimated_target_pose_.pose.position.z = sum_z / sum_weight;
+
+            estimated_target_velocity_.twist.linear.x = sum_vx / sum_weight;
+            estimated_target_velocity_.twist.linear.y = sum_vy / sum_weight;
+            estimated_target_velocity_.twist.linear.z = sum_vz / sum_weight;
         }
 
         estimated_target_pose_.pose.orientation.x = 0.0;
@@ -418,98 +482,17 @@ public:
 
         estimated_target_pose_.header.stamp = ros::Time::now();
         estimated_target_pose_.header.frame_id = "map";
-    }
 
-    // 重构的观测导向计算函数：螺旋线接近
-    void calculateObserveGuide() {
-        double uav_x = current_uav_pose_.pose.position.x;
-        double uav_y = current_uav_pose_.pose.position.y;
-        double uav_z = current_uav_pose_.pose.position.z;
-        double target_x = estimated_target_pose_.pose.position.x;
-        double target_y = estimated_target_pose_.pose.position.y;
-        double target_z = estimated_target_pose_.pose.position.z;
+        estimated_target_velocity_.header.stamp = ros::Time::now();
+        estimated_target_velocity_.header.frame_id = "map";
 
-        // 1. 计算径向向量（无人机→目标）
-        double dx_radial = target_x - uav_x;
-        double dy_radial = target_y - uav_y;
-        double dz_radial = target_z - uav_z;
-        double dist_uav2target = sqrt(dx_radial*dx_radial + dy_radial*dy_radial + dz_radial*dz_radial);
-
-        if (dist_uav2target < 50.0f) {
-            // 距离过近：直接飞向目标
-            observe_guide_vel_.linear.x = dx_radial * approach_vel_gain_;
-            observe_guide_vel_.linear.y = dy_radial * approach_vel_gain_;
-            observe_guide_vel_.linear.z = -dz_radial * approach_vel_gain_;
-            observe_guide_vel_.angular.x = 0.0;
-            observe_guide_vel_.angular.y = 0.0;
-            observe_guide_vel_.angular.z = 0.0;
-        } else {
-            // 2. 归一化径向向量
-            double dx_radial_norm = dx_radial / dist_uav2target;
-            double dy_radial_norm = dy_radial / dist_uav2target;
-            double dz_radial_norm = dz_radial / dist_uav2target;
-
-            // 3. 计算切向向量（垂直于径向，保证绕目标旋转）
-            // 先定义一个辅助向上向量（ENU坐标系z轴）
-            double up_x = 0.0, up_y = 0.0, up_z = 1.0;
-            // 叉乘：径向 × 向上 → 得到第一个切向向量（水平方向）
-            double dx_tan1 = dy_radial_norm * up_z - dz_radial_norm * up_y;
-            double dy_tan1 = dz_radial_norm * up_x - dx_radial_norm * up_z;
-            double dz_tan1 = dx_radial_norm * up_y - dy_radial_norm * up_x;
-            double len_tan1 = sqrt(dx_tan1*dx_tan1 + dy_tan1*dy_tan1 + dz_tan1*dz_tan1);
-            if (len_tan1 < 1e-3) {
-                // 如果径向与z轴平行，换用x轴作为辅助向量
-                up_x = 1.0; up_y = 0.0; up_z = 0.0;
-                dx_tan1 = dy_radial_norm * up_z - dz_radial_norm * up_y;
-                dy_tan1 = dz_radial_norm * up_x - dx_radial_norm * up_z;
-                dz_tan1 = dx_radial_norm * up_y - dy_radial_norm * up_x;
-                len_tan1 = sqrt(dx_tan1*dx_tan1 + dy_tan1*dy_tan1 + dz_tan1*dz_tan1);
-            }
-            // 归一化切向向量1
-            dx_tan1 /= len_tan1;
-            dy_tan1 /= len_tan1;
-            dz_tan1 /= len_tan1;
-
-            // 4. 计算第二个切向向量（径向 × 切向1 → 保证正交）
-            double dx_tan2 = dy_radial_norm * dz_tan1 - dz_radial_norm * dy_tan1;
-            double dy_tan2 = dz_radial_norm * dx_tan1 - dx_radial_norm * dz_tan1;
-            double dz_tan2 = dx_radial_norm * dy_tan1 - dy_radial_norm * dx_tan1;
-
-            // 5. 融合径向和切向速度
-            // 径向速度：与距离成正比（距离越远，接近速度越快）
-            double vel_radial = dist_uav2target * approach_vel_gain_;
-            // 切向速度：与距离成正比（保证角速度恒定）
-            double vel_tangent = sqrt(dist_uav2target) * spiral_angular_vel_;
-
-            // 合成最终速度（切向速度主要在水平方向，高度方向保持径向接近）
-            double vx = (dx_radial_norm * vel_radial) + (dx_tan1 * vel_tangent);
-            double vy = (dy_radial_norm * vel_radial) + (dy_tan1 * vel_tangent);
-            double vz = -(dz_radial_norm * vel_radial); // 高度方向仅径向接近
-            double total_vel = sqrt(vx*vx + vy*vy + vz*vz);
-            if (total_vel > 40.0f) {
-                double scale = 40.0f / total_vel;
-                vx *= scale;
-                vy *= scale;
-                vz *= scale;
-            }
-            observe_guide_vel_.linear.x = vx;
-            observe_guide_vel_.linear.y = vy;
-            observe_guide_vel_.linear.z = vz;
-            observe_guide_vel_.angular.x = 0.0;
-            observe_guide_vel_.angular.y = 0.0;
-            observe_guide_vel_.angular.z = 0.0;
-        }
-
-        // 6. 观测导向位置（可选：用于轨迹生成，这里设为当前位置+速度*1s）
-        double dt_guide = 1.0; // 1s后的预测位置
-        observe_guide_pose_.pose.position.x = uav_x + observe_guide_vel_.linear.x * dt_guide;
-        observe_guide_pose_.pose.position.y = uav_y + observe_guide_vel_.linear.y * dt_guide;
-        observe_guide_pose_.pose.position.z = uav_z + observe_guide_vel_.linear.z * dt_guide;
-        observe_guide_pose_.pose.orientation = estimated_target_pose_.pose.orientation;
-
-        // 7. 设置时间戳和坐标系
-        observe_guide_pose_.header.stamp = ros::Time::now();
-        observe_guide_pose_.header.frame_id = "map";
+        // ROS_WARN_THROTTLE(1.0, "[EST] target_pos=(%.2f, %.2f, %.2f), target_vel=(%.2f, %.2f, %.2f)",
+        //                   estimated_target_pose_.pose.position.x,
+        //                   estimated_target_pose_.pose.position.y,
+        //                   estimated_target_pose_.pose.position.z,
+        //                   estimated_target_velocity_.twist.linear.x,
+        //                   estimated_target_velocity_.twist.linear.y,
+        //                   estimated_target_velocity_.twist.linear.z);
     }
 
     void publishEstimatedTargetMarker() {
@@ -574,12 +557,8 @@ public:
         target_est_pose_pub_.publish(estimated_target_pose_);
     }
 
-    void publishObserveGuidePose() {
-        observe_guide_pose_pub_.publish(observe_guide_pose_);
-    }
-
-    void publishObserveGuideVel() {
-        observe_guide_vel_pub_.publish(observe_guide_vel_);
+    void publishEstimatedTargetTwist() {
+        target_est_twist_pub_.publish(estimated_target_velocity_);
     }
 };
 
