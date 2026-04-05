@@ -140,7 +140,19 @@ public:
     }
 
     void uavPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
-        current_uav_pose_ = *msg;
+        // ===== NED → NWU 坐标转换 =====
+        current_uav_pose_.pose.position.x = msg->pose.position.x;
+        current_uav_pose_.pose.position.y = -msg->pose.position.y;
+        current_uav_pose_.pose.position.z = -msg->pose.position.z;
+
+        // 四元数：w,x不变, y,z取反 (等价于绕X轴旋转180度)
+        current_uav_pose_.pose.orientation.w = msg->pose.orientation.w;
+        current_uav_pose_.pose.orientation.x = msg->pose.orientation.x;
+        current_uav_pose_.pose.orientation.y = -msg->pose.orientation.y;
+        current_uav_pose_.pose.orientation.z = -msg->pose.orientation.z;
+
+        current_uav_pose_.header.stamp = msg->header.stamp;
+        current_uav_pose_.header.frame_id = msg->header.frame_id;
         is_uav_pose_received_ = true;
     }
 

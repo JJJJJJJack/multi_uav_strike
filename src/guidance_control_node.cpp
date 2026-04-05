@@ -6,7 +6,9 @@
 #include <std_msgs/Int16.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/Bool.h>
+#include <visualization_msgs/Marker.h>
 #include <limits>
+#include <Eigen/Eigen>
 
 #include "multi_uav_strike/guidance_strategies.h"
 
@@ -29,6 +31,10 @@ private:
     ros::Publisher thrust_cmd_pub_;       // thrust
     ros::Publisher flight_mode_pub_;      // flight_mode
     ros::Publisher strike_eval_pub_;      // 打击评估结果
+    ros::Publisher thrust_dir_pub_;       // 推力方向可视化
+    ros::Publisher uav_pose_nwu_pub_;     // NWU姿态发布(RViz用)
+    ros::Publisher intercept_point_pub_; // 拦截点可视化
+    ros::Publisher debug_pub_;           // 调试信息
 
     // Timer for guidance computation
     ros::Timer guidance_timer_;
@@ -150,6 +156,15 @@ public:
 
         strike_eval_pub_ = nh_.advertise<std_msgs::Bool>(
             "strike_evaluation", 10);  // 发布打击评估结果
+
+        thrust_dir_pub_ = nh_.advertise<visualization_msgs::Marker>(
+            "thrust_direction", 10);  // 发布推力方向可视化
+
+        uav_pose_nwu_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(
+            "quad/pose_nwu", 10);  // NWU姿态发布(RViz用)
+
+        intercept_point_pub_ = nh_.advertise<visualization_msgs::Marker>(
+            "intercept_point", 10);  // 拦截点可视化
     }
 
     void initGuidanceStrategy() {
@@ -169,7 +184,22 @@ public:
     }
 
     void uavPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
-        current_uav_pose_ = *msg;
+        // ===== NED → NWU 坐标转换 =====
+        // NED: X=North, Y=East, Z=Down
+        // NWU: X=North, Y=West, Z=Up
+        // 位置：X不变, Y取反, Z取反
+        current_uav_pose_.pose.position.x = msg->pose.position.x;
+        current_uav_pose_.pose.position.y = -msg->pose.position.y;
+        current_uav_pose_.pose.position.z = -msg->pose.position.z;
+
+        // 四元数：w,x不变, y,z取反 (等价于绕X轴旋转180度)
+        current_uav_pose_.pose.orientation.w = msg->pose.orientation.w;
+        current_uav_pose_.pose.orientation.x = msg->pose.orientation.x;
+        current_uav_pose_.pose.orientation.y = -msg->pose.orientation.y;
+        current_uav_pose_.pose.orientation.z = -msg->pose.orientation.z;
+
+        current_uav_pose_.header.stamp = msg->header.stamp;
+        current_uav_pose_.header.frame_id = msg->header.frame_id;
         is_uav_pose_received_ = true;
     }
 
@@ -239,6 +269,10 @@ public:
             return;
         }
 
+        // 发布NWU姿态用于RViz显示
+        current_uav_pose_.header.stamp = ros::Time::now();
+        uav_pose_nwu_pub_.publish(current_uav_pose_);
+
         // Compute guidance command based on strategy type
         switch (current_strategy_type_) {
             case multi_uav_strike::GuidanceStrategyType::INTERCEPT: {
@@ -248,11 +282,11 @@ public:
                     current_target_pose_,
                     current_target_twist_);
 
-                // Publish velocity command
+                // Publish velocity command (NWU → NED转换: x不变, y取反, z取反)
                 geometry_msgs::Twist vel_cmd;
                 vel_cmd.linear.x = cmd.velocity.x();
-                vel_cmd.linear.y = cmd.velocity.y();
-                vel_cmd.linear.z = -cmd.velocity.z();
+                vel_cmd.linear.y = -cmd.velocity.y();  // NWU Y(West) -> NED -Y(East)
+                vel_cmd.linear.z = -cmd.velocity.z();  // NWU Z(Up) -> NED -Z(Down)
                 vel_cmd.angular.x = 0.0;
                 vel_cmd.angular.y = 0.0;
                 vel_cmd.angular.z = 0.0;
@@ -265,6 +299,9 @@ public:
 
                 // 评估打击效果（仅在未评估过第一次打击时）
                 evaluateStrike();
+
+                // 发布拦截点可视化
+                publishInterceptPointMarker(cmd.intercept_point);
                 break;
             }
 
@@ -298,17 +335,17 @@ public:
     }
 
     void publishAttitudeThrust(const multi_uav_strike::AttitudeThrustCommand& cmd) {
-        // Publish attitude
+        // Publish attitude (NWU → NED转换: w,x不变, y,z取反)
         geometry_msgs::PoseStamped att_cmd;
         att_cmd.header.stamp = ros::Time::now();
         att_cmd.header.frame_id = "map";
         att_cmd.pose.position.x = 0.0;
         att_cmd.pose.position.y = 0.0;
         att_cmd.pose.position.z = 0.0;
-        att_cmd.pose.orientation.x = cmd.attitude.x();
-        att_cmd.pose.orientation.y = cmd.attitude.y();
-        att_cmd.pose.orientation.z = cmd.attitude.z();
         att_cmd.pose.orientation.w = cmd.attitude.w();
+        att_cmd.pose.orientation.x = cmd.attitude.x();
+        att_cmd.pose.orientation.y = -cmd.attitude.y();  // NWU -> NED
+        att_cmd.pose.orientation.z = -cmd.attitude.z();  // NWU -> NED
         attitude_cmd_pub_.publish(att_cmd);
 
         // Publish thrust
@@ -320,6 +357,75 @@ public:
         std_msgs::Int16 mode_msg;
         mode_msg.data = flight_mode_attitude_;
         flight_mode_pub_.publish(mode_msg);
+
+        // 发布推力方向可视化（用于RViz显示）
+        publishThrustDirectionMarker(cmd);
+    }
+
+    // 发布推力方向可视化 marker
+    void publishThrustDirectionMarker(const multi_uav_strike::AttitudeThrustCommand& cmd) {
+        visualization_msgs::Marker marker;
+        marker.header.stamp = ros::Time::now();
+        marker.header.frame_id = "map";
+        marker.ns = "thrust_direction";
+        marker.id = 0;
+        marker.type = visualization_msgs::Marker::ARROW;
+        marker.action = visualization_msgs::Marker::ADD;
+
+        // 箭头起点：无人机位置
+        marker.points.resize(2);
+        marker.points[0].x = current_uav_pose_.pose.position.x;
+        marker.points[0].y = current_uav_pose_.pose.position.y;
+        marker.points[0].z = current_uav_pose_.pose.position.z;
+
+        // 箭头终点：根据姿态和推力计算方向
+        Eigen::Quaterniond quat(cmd.attitude.w(), cmd.attitude.x(), cmd.attitude.y(), cmd.attitude.z());
+        Eigen::Vector3d thrust_dir = quat * Eigen::Vector3d(0, 0, 1);  // 机体系Z轴为推力方向
+        double arrow_length = 3.0;  // 箭头长度3米
+        marker.points[1].x = marker.points[0].x + thrust_dir.x() * arrow_length;
+        marker.points[1].y = marker.points[0].y + thrust_dir.y() * arrow_length;
+        marker.points[1].z = marker.points[0].z + thrust_dir.z() * arrow_length;
+
+        // 推力越大箭头越粗
+        marker.scale.x = 0.1 + cmd.thrust * 0.3;  // 直径0.1~0.4m
+        marker.scale.y = 0.2 + cmd.thrust * 0.6;   // 头部宽度0.2~0.8m
+        marker.scale.z = 0.0;
+
+        // 颜色：推力越大越红
+        marker.color.r = 0.5 + cmd.thrust * 0.5;
+        marker.color.g = 0.5 - cmd.thrust * 0.5;
+        marker.color.b = 0.0;
+        marker.color.a = 1.0;
+
+        marker.lifetime = ros::Duration(0.1);
+        thrust_dir_pub_.publish(marker);
+    }
+
+    // 发布拦截点可视化 marker
+    void publishInterceptPointMarker(const Eigen::Vector3d& intercept_point) {
+        visualization_msgs::Marker marker;
+        marker.header.stamp = ros::Time::now();
+        marker.header.frame_id = "map";
+        marker.ns = "intercept_point";
+        marker.id = 0;
+        marker.type = visualization_msgs::Marker::SPHERE;
+        marker.action = visualization_msgs::Marker::ADD;
+        marker.pose.position.x = intercept_point.x();
+        marker.pose.position.y = intercept_point.y();
+        marker.pose.position.z = intercept_point.z();
+        marker.pose.orientation.w = 1.0;
+        marker.pose.orientation.x = 0.0;
+        marker.pose.orientation.y = 0.0;
+        marker.pose.orientation.z = 0.0;
+        marker.scale.x = 1.0;  // 球直径1米
+        marker.scale.y = 1.0;
+        marker.scale.z = 1.0;
+        marker.color.r = 1.0;
+        marker.color.g = 0.5;
+        marker.color.b = 0.0;
+        marker.color.a = 1.0;
+        marker.lifetime = ros::Duration(0.1);
+        intercept_point_pub_.publish(marker);
     }
 };
 

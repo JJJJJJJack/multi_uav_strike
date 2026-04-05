@@ -10,7 +10,7 @@
       <param name="x_init" value="0.0" type="double" />
       <param name="y_init" value="5.0" type="double" />
       <!-- 速度限制（m/s） -->
-      <param name="max_speed" value="17" type="double" />
+      <param name="max_speed" value="0.1" type="double" />
       <param name="min_speed" value="0.0" type="double" />
       <!-- 加速度限制（m/s²） -->
       <param name="max_tangential_acc" value="1" type="double" />
@@ -24,7 +24,7 @@
     <node name="quad" pkg="multimodequad_ros" type="multimodequad_ros" respawn="true" output="screen">
       <param name="init_pose_x"   value="0.0"/>
       <param name="init_pose_y"   value="0.0"/>
-      <param name="init_pose_z"   value="5.0"/>
+      <param name="init_pose_z"   value="-5.0"/>
     </node>
     <node name="gimbal_simulator_node"
         pkg="multi_uav_strike"
@@ -81,11 +81,11 @@
   </group>
 
   <group ns="quad2">
-    <node name="quad" pkg="multimodequad_ros" type="multimodequad_ros" respawn="true" output="screen">
+    <!--node name="quad" pkg="multimodequad_ros" type="multimodequad_ros" respawn="true" output="screen">
       <param name="init_pose_x"   value="2.0"/>
       <param name="init_pose_y"   value="50.0"/>
-      <param name="init_pose_z"   value="50.0"/>
-    </node>
+      <param name="init_pose_z"   value="-50.0"/>
+    </node-->
     <node name="gimbal_simulator_node"
         pkg="multi_uav_strike"
         type="gimbal_simulator_node"
@@ -126,7 +126,7 @@
           type="guidance_control_node"
           output="screen"
           respawn="false">
-        <param name="guidance_strategy" value="intercept" type="str" />
+        <param name="guidance_strategy" value="los" type="str" />
         <param name="uav_speed" value="10.0" type="double" />
         <param name="intercept_time_horizon" value="5.0" type="double" />
         <param name="v_max" value="5.0" type="double" />
@@ -137,6 +137,9 @@
         <param name="los_kp_yaw" value="1.5" type="double" />
         <param name="los_kp_pitch" value="1.5" type="double" />
         <param name="los_max_rate" value="1.2" type="double" />
+        <param name="los_debug_yaw_only" value="true" type="bool" />       <!-- 只控制偏航 -->
+        <param name="los_debug_fixed_thrust" value="true" type="bool" />   <!-- 使用固定油门 -->
+        <param name="los_debug_fixed_thrust_value" value="0.313" type="double" />  <!-- 固定油门值 -->
     </node>
   </group>
 

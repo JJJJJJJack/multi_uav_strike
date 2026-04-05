@@ -63,6 +63,7 @@ VelocityCommand InterceptGuidance::computeCommand(
     if (dist > 0.1) {
         direction.normalize();
         cmd.velocity = direction * uav_speed_;  // Constant speed to intercept
+        cmd.intercept_point = intercept_point;  // 返回拦截点
     }
 
     ROS_DEBUG_THROTTLE(1.0, "[Intercept] dist=%.2f, vel=(%.2f, %.2f, %.2f)",
@@ -244,15 +245,17 @@ AttitudeThrustCommand LosGuidance::computeAttitudeThrust(
     double sp = sin(desired_pitch * 0.5);
     double cr = cos(desired_roll * 0.5);
     double sr = sin(desired_roll * 0.5);
+    std::cout << "desired_roll: " << desired_roll << ", desired_pitch: " << desired_pitch << ", desired_yaw: " << desired_yaw << std::endl;
 
     cmd.attitude.w() = cr * cp * cy + sr * sp * sy;
     cmd.attitude.x() = sr * cp * cy - cr * sp * sy;
     cmd.attitude.y() = cr * sp * cy + sr * cp * sy;
     cmd.attitude.z() = cr * cp * sy - sr * sp * cy;
 
-    // Thrust proportional to total attitude command
-    double total_angle = sqrt(desired_roll*desired_roll + desired_pitch*desired_pitch);
-    cmd.thrust = thrust_weight_ * total_angle + 0.5;  // Bias for hover
+    // 推力控制：使用固定的悬停推力
+    // 姿态变化不应该大幅改变推力，否则飞机会上下起伏
+    // 如果需要高度控制，应该通过调整desired_pitch来实现
+    cmd.thrust = 0.313;  // 悬停油门固定值
 
     return cmd;
 }
@@ -306,18 +309,19 @@ AttitudeThrustCommand LosGuidance::computeCommand(
         desired_pitch_rate *= max_rate / pitch_rate_mag;
     }
 
-    // Convert angular rates to attitude angles (assuming we integrate to get angles)
-    // For simplicity, directly map angular rates to roll/pitch commands
-    // In a full implementation, we'd integrate angular rates to get attitude
-    double desired_roll = desired_pitch_rate;   // Map pitch rate to roll
+    // 计算期望的roll和pitch
+    // Roll: 用于协调转弯，基于yaw_error和横向距离
+    // rel_pos.y() > 0 表示目标在无人机西方（左侧），需要左转（正roll）
+    // rel_pos.y() < 0 表示目标在无人机东方（右侧），需要右转（负roll）
     double roll_sign = (rel_pos.y() > 0) ? 1.0 : -1.0;
-    desired_roll = roll_sign * std::abs(desired_roll) * 0.5;
+    double desired_roll = roll_sign * std::abs(yaw_error) * 2.0;  // yaw_error越大，roll越大
+    double desired_pitch_for_cmd = desired_pitch;  // 俯仰控制高度
 
-    // Use yaw rate as yaw command
-    double integrated_yaw = integrated_yaw_error_ + desired_yaw_rate * 0.02;  // dt ~ 50Hz
-    integrated_yaw_error_ = std::max(-M_PI, std::min(M_PI, integrated_yaw));
+    // Clamp roll to reasonable range
+    desired_roll = std::max(-0.5, std::min(0.5, desired_roll));
 
-    cmd = computeAttitudeThrust(desired_roll, desired_pitch, integrated_yaw);
+    // 使用绝对偏航角（不需要积分）
+    cmd = computeAttitudeThrust(desired_roll, desired_pitch_for_cmd, desired_yaw);
 
     ROS_DEBUG_THROTTLE(1.0, "[LOS] yaw_err=%.2f, pitch_err=%.2f, thrust=%.2f",
                        yaw_error, pitch_error, cmd.thrust);

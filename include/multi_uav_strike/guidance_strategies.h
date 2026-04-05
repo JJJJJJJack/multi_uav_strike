@@ -21,6 +21,7 @@ enum class GuidanceStrategyType {
 // Velocity command output (for Intercept strategy)
 struct VelocityCommand {
     Eigen::Vector3d velocity;
+    Eigen::Vector3d intercept_point;  // 拦截点位置(NWU)
 };
 
 // Attitude + Thrust command output (for MinSnap and LOS strategies)

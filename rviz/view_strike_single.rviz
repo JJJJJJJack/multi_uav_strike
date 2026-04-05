@@ -6,11 +6,9 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /Pose1
-        - /Marker2
-        - /MarkerArray1
-        - /Marker3
-        - /Pose2
+        - /MarkerArray2
+        - /Marker4
+        - /Pose3
       Splitter Ratio: 0.35326841473579407
     Tree Height: 677
   - Class: rviz/Selection
@@ -78,12 +76,36 @@ Visualization Manager:
       Shaft Length: 1
       Shaft Radius: 0.05000000074505806
       Shape: Arrow
-      Topic: /gimbal_pose
+      Topic: /quad1/gimbal_pose
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Axes Length: 1
+      Axes Radius: 0.10000000149011612
+      Class: rviz/Pose
+      Color: 0; 255; 0
+      Enabled: true
+      Head Length: 0.30000001192092896
+      Head Radius: 0.10000000149011612
+      Name: Pose
+      Queue Size: 10
+      Shaft Length: 1
+      Shaft Radius: 0.05000000074505806
+      Shape: Arrow
+      Topic: /quad2/gimbal_pose
       Unreliable: false
       Value: true
     - Class: rviz/Marker
       Enabled: true
-      Marker Topic: /target_estimated_marker
+      Marker Topic: /quad1/target_estimated_marker
+      Name: Marker
+      Namespaces:
+        estimated_target: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /quad2/target_estimated_marker
       Name: Marker
       Namespaces:
         estimated_target: true
@@ -91,7 +113,15 @@ Visualization Manager:
       Value: true
     - Class: rviz/MarkerArray
       Enabled: true
-      Marker Topic: /particles_marker_array
+      Marker Topic: /quad2/particles_marker_array
+      Name: MarkerArray
+      Namespaces:
+        particles: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /quad1/particles_marker_array
       Name: MarkerArray
       Namespaces:
         particles: true
@@ -99,7 +129,7 @@ Visualization Manager:
       Value: true
     - Class: rviz/Marker
       Enabled: true
-      Marker Topic: /thrust_direction
+      Marker Topic: /quad2/thrust_direction
       Name: Marker
       Namespaces:
         {}
@@ -118,16 +148,8 @@ Visualization Manager:
       Shaft Length: 1
       Shaft Radius: 0.05000000074505806
       Shape: Axes
-      Topic: /quad/pose_nwu
+      Topic: /quad2/quad/pose_nwu
       Unreliable: false
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /intercept_point
-      Name: Marker
-      Namespaces:
-        intercept_point: true
-      Queue Size: 100
       Value: true
   Enabled: true
   Global Options:
@@ -157,7 +179,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 78.46955871582031
+      Distance: 97.27931213378906
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -165,17 +187,17 @@ Visualization Manager:
         Value: false
       Field of View: 1
       Focal Point:
-        X: 13.835524559020996
-        Y: 6.516898155212402
-        Z: -15.990650177001953
+        X: 28.640899658203125
+        Y: 17.241079330444336
+        Z: 10.60445499420166
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6453980803489685
+      Pitch: 0.4103982746601105
       Target Frame: <Fixed Frame>
-      Yaw: 4.209229469299316
+      Yaw: 4.144230842590332
     Saved: ~
 Window Geometry:
   Displays:
