@@ -70,11 +70,54 @@ target_link_libraries(guidance_control_node
   ${catkin_LIBRARIES}
 )
 
-# ========== 安装可执行文件 ==========
-# install(TARGETS
-#   target_motion_simulator_node
-#   gimbal_simulator_node
-#   target_estimator_node
-#   guidance_control_node
-#   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+# ========== P0: 核心框架 ==========
+# 5. 通信节点（统一机间+地面站通信）
+add_executable(comm_node
+  src/comm_node.cpp
+)
+target_link_libraries(comm_node
+  ${catkin_LIBRARIES}
+)
+
+# 6. 航点执行器节点
+add_executable(waypoint_executor_node
+  src/waypoint_executor_node.cpp
+)
+target_link_libraries(waypoint_executor_node
+  ${catkin_LIBRARIES}
+)
+
+# 7. 任务管理器节点（核心状态机）
+add_executable(mission_manager_node
+  src/mission_manager_node.cpp
+)
+target_link_libraries(mission_manager_node
+  ${catkin_LIBRARIES}
+)
+
+# 8. 航点分发器节点（双机航点分配）
+add_executable(waypoint_distributor_node
+  src/waypoint_distributor_node.cpp
+)
+target_link_libraries(waypoint_distributor_node
+  ${catkin_LIBRARIES}
+)
+
+# ========== 安装可执行文件和脚本 ==========
+install(TARGETS
+  target_motion_simulator_node
+  gimbal_simulator_node
+  target_estimator_node
+  guidance_control_node
+  comm_node
+  waypoint_executor_node
+  mission_manager_node
+  waypoint_distributor_node
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+# 安装 Python 脚本
+install(PROGRAMS
+  scripts/gs_simulator_node.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)

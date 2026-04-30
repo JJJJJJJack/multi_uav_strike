@@ -28,8 +28,9 @@ struct VelocityCommand {
 struct AttitudeThrustCommand {
     Eigen::Quaterniond attitude;
     double thrust;
+    double yaw_rate;  // 偏航角速率（用于LOS控制）
 
-    AttitudeThrustCommand() : thrust(0.0) {}
+    AttitudeThrustCommand() : thrust(0.0), yaw_rate(0.0) {}
 };
 
 // Base class for all guidance strategies

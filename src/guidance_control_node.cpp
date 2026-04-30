@@ -24,10 +24,12 @@ private:
     ros::Subscriber uav_pose_sub_;
     ros::Subscriber los_angle_sub_;
     ros::Subscriber real_target_sub_;  // 真实目标位置用于评估
+    ros::Subscriber enable_sub_;       // 使能控制（来自 mission_manager）
 
     // Publishers
     ros::Publisher vel_cmd_pub_;          // setpoint_velocity/cmd_vel_unstamped
     ros::Publisher attitude_cmd_pub_;     // setpoint_attitude/attitude
+    ros::Publisher attitude_rates_pub_;   // setpoint_attitude/cmd_vel (角速率)
     ros::Publisher thrust_cmd_pub_;       // thrust
     ros::Publisher flight_mode_pub_;      // flight_mode
     ros::Publisher strike_eval_pub_;      // 打击评估结果
@@ -51,6 +53,9 @@ private:
     bool is_target_twist_received_ = false;
     bool is_los_received_ = false;
     bool is_real_target_received_ = false;
+
+    // 使能控制：SEARCH_ONLY 模式下 guidance 不工作
+    bool is_enabled_;
 
     // Guidance strategy
     std::unique_ptr<multi_uav_strike::GuidanceStrategy> guidance_strategy_;
@@ -77,7 +82,8 @@ public:
         strike_altitude_(0.0),
         strike_time_(0.0),
         is_approaching_(true),
-        prev_distance_(std::numeric_limits<double>::max()) {
+        prev_distance_(std::numeric_limits<double>::max()),
+        is_enabled_(false) {
         initParams();
         initSubscribers();
         initPublishers();
@@ -89,7 +95,7 @@ public:
             &GuidanceControlNode::guidanceTimerCallback,
             this);
 
-        ROS_INFO("Guidance Control Node initialized with strategy: %s",
+        ROS_INFO("Guidance Control Node initialized with strategy: %s (disabled by default)",
                  current_strategy_name_.c_str());
     }
 
@@ -139,6 +145,11 @@ public:
         real_target_sub_ = nh_.subscribe(
             "/target_position", 10,
             &GuidanceControlNode::realTargetCallback, this);
+
+        // 使能控制（SEARCH_ONLY 模式下不工作）
+        enable_sub_ = nh_.subscribe(
+            "guidance/enable", 10,
+            &GuidanceControlNode::enableCallback, this);
     }
 
     void initPublishers() {
@@ -147,6 +158,9 @@ public:
 
         attitude_cmd_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(
             "quad/setpoint_attitude/attitude", 10);
+
+        attitude_rates_pub_ = nh_.advertise<geometry_msgs::TwistStamped>(
+            "quad/setpoint_attitude/cmd_vel", 10);
 
         thrust_cmd_pub_ = nh_.advertise<std_msgs::Float32>(
             "quad/thrust", 10);
@@ -213,6 +227,15 @@ public:
         is_real_target_received_ = true;
     }
 
+    void enableCallback(const std_msgs::Bool::ConstPtr& msg) {
+        is_enabled_ = msg->data;
+        if (is_enabled_) {
+            ROS_WARN("[Guidance] Guidance ENABLED");
+        } else {
+            ROS_WARN("[Guidance] Guidance DISABLED (SEARCH_ONLY mode)");
+        }
+    }
+
     // 计算打击评估
     void evaluateStrike() {
         if (first_strike_evaluated_ || !is_real_target_received_) {
@@ -257,6 +280,11 @@ public:
     }
 
     void guidanceTimerCallback(const ros::TimerEvent&) {
+        // SEARCH_ONLY 模式下 guidance 不工作
+        if (!is_enabled_) {
+            return;
+        }
+
         if (!is_uav_pose_received_ || !is_target_pose_received_) {
             ROS_WARN_THROTTLE(1.0, "[Guidance] Waiting for UAV pose or target data...");
             return;
@@ -270,8 +298,9 @@ public:
         }
 
         // 发布NWU姿态用于RViz显示
-        current_uav_pose_.header.stamp = ros::Time::now();
-        uav_pose_nwu_pub_.publish(current_uav_pose_);
+        // 已移至 mission_manager_node（SEARCH_ONLY 模式下也需要显示）
+        // current_uav_pose_.header.stamp = ros::Time::now();
+        // uav_pose_nwu_pub_.publish(current_uav_pose_);
 
         // Compute guidance command based on strategy type
         switch (current_strategy_type_) {
@@ -357,6 +386,18 @@ public:
         std_msgs::Int16 mode_msg;
         mode_msg.data = flight_mode_attitude_;
         flight_mode_pub_.publish(mode_msg);
+
+        // Publish angular velocity (yaw_rate) via setpoint_attitude/cmd_vel
+        geometry_msgs::TwistStamped vel_cmd;
+        vel_cmd.header.stamp = ros::Time::now();
+        vel_cmd.header.frame_id = "map";
+        vel_cmd.twist.linear.x = 0.0;
+        vel_cmd.twist.linear.y = 0.0;
+        vel_cmd.twist.linear.z = 0.0;
+        vel_cmd.twist.angular.x = 0.0;
+        vel_cmd.twist.angular.y = 0.0;
+        vel_cmd.twist.angular.z = cmd.yaw_rate;  // 偏航角速率
+        attitude_rates_pub_.publish(vel_cmd);
 
         // 发布推力方向可视化（用于RViz显示）
         publishThrustDirectionMarker(cmd);

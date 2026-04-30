@@ -30,7 +30,7 @@ Eigen::Vector3d InterceptGuidance::computeInterceptPoint(
     t_intercept = std::min(t_intercept, intercept_time_horizon_);
 
     // Predicted target position
-    Eigen::Vector3d intercept_point = target_pos + target_vel * t_intercept;
+    Eigen::Vector3d intercept_point = target_pos;// + target_vel * t_intercept;
 
     return intercept_point;
 }
@@ -49,21 +49,15 @@ VelocityCommand InterceptGuidance::computeCommand(
     Eigen::Vector3d target_pos(target_pose.pose.position.x,
                                 target_pose.pose.position.y,
                                 target_pose.pose.position.z);
-    Eigen::Vector3d target_vel(target_twist.twist.linear.x,
-                                target_twist.twist.linear.y,
-                                target_twist.twist.linear.z);
 
-    // Compute intercept point
-    Eigen::Vector3d intercept_point = computeInterceptPoint(uav_pos, target_pos, target_vel);
-
-    // Direction to intercept point
-    Eigen::Vector3d direction = intercept_point - uav_pos;
+    // Direction to target (直接指向目标，忽略速度预测)
+    Eigen::Vector3d direction = target_pos - uav_pos;
     double dist = direction.norm();
 
     if (dist > 0.1) {
         direction.normalize();
-        cmd.velocity = direction * uav_speed_;  // Constant speed to intercept
-        cmd.intercept_point = intercept_point;  // 返回拦截点
+        cmd.velocity = direction * uav_speed_;  // Constant speed to target
+        cmd.intercept_point = target_pos;  // 用于可视化
     }
 
     ROS_DEBUG_THROTTLE(1.0, "[Intercept] dist=%.2f, vel=(%.2f, %.2f, %.2f)",
@@ -268,9 +262,15 @@ AttitudeThrustCommand LosGuidance::computeCommand(
 
     AttitudeThrustCommand cmd;
 
-    // Get current LOS from gimbal
-    double current_yaw = los_angle.x;
-    double current_pitch = los_angle.y;
+    // Get current yaw from无人机自身姿态（而不是gimbal的LOS角度）
+    Eigen::Quaterniond q(uav_pose.pose.orientation.w,
+                         uav_pose.pose.orientation.x,
+                         uav_pose.pose.orientation.y,
+                         uav_pose.pose.orientation.z);
+    // Yaw (Z轴旋转)
+    double current_yaw = atan2(2.0*(q.w()*q.z() + q.x()*q.y()),
+                               1.0 - 2.0*(q.y()*q.y() + q.z()*q.z()));
+    double current_pitch = los_angle.y;  // 俯仰仍用LOS
 
     // Compute desired LOS angles to target
     Eigen::Vector3d uav_pos(uav_pose.pose.position.x,
@@ -310,10 +310,10 @@ AttitudeThrustCommand LosGuidance::computeCommand(
     }
 
     // 计算期望的roll和pitch
-    // Roll: 用于协调转弯，基于yaw_error和横向距离
-    // rel_pos.y() > 0 表示目标在无人机西方（左侧），需要左转（正roll）
-    // rel_pos.y() < 0 表示目标在无人机东方（右侧），需要右转（负roll）
-    double roll_sign = (rel_pos.y() > 0) ? 1.0 : -1.0;
+    // Roll: 用于协调转弯，基于yaw_error和横向位置
+    // NWU坐标系: rel_pos.y() > 0 表示目标在左侧(西)，左转需要负roll
+    //            rel_pos.y() < 0 表示目标在右侧(东)，右转需要正roll
+    double roll_sign = (rel_pos.y() > 0) ? -1.0 : 1.0;
     double desired_roll = roll_sign * std::abs(yaw_error) * 2.0;  // yaw_error越大，roll越大
     double desired_pitch_for_cmd = desired_pitch;  // 俯仰控制高度
 
@@ -322,6 +322,7 @@ AttitudeThrustCommand LosGuidance::computeCommand(
 
     // 使用绝对偏航角（不需要积分）
     cmd = computeAttitudeThrust(desired_roll, desired_pitch_for_cmd, desired_yaw);
+    cmd.yaw_rate = -desired_yaw_rate;  // 偏航角速率用于cmd_vel
 
     ROS_DEBUG_THROTTLE(1.0, "[LOS] yaw_err=%.2f, pitch_err=%.2f, thrust=%.2f",
                        yaw_error, pitch_error, cmd.thrust);
